@@ -8,23 +8,18 @@
 #include <unistd.h>
 #include "common.h"
 #include "crc32c.h"
+#include "splitpoints.h"
 
-#define BLOCK_SIZE		1048576
-#define CRC_BLOCK_SIZE		64
+#define DIV_ROUND_UP(a, b)	(((a) + (b) - 1) / (b))
 
-static uint32_t crc_thresh = 0x00001000;
+#define BLOCK_SIZE		16777216
 
-static int fd;
-static off_t file_size;
-static off_t file_offset;
-static void (*split_handler)(off_t split_offset);
-
-static bool split_at(uint8_t *buf)
+static bool should_split_at(struct split_job *sj, uint8_t *buf)
 {
 	uint32_t crc;
 
-	crc = crc32c(0, buf, CRC_BLOCK_SIZE);
-	if (crc <= crc_thresh)
+	crc = crc32c(0, buf, sj->crc_block_size);
+	if (crc <= sj->crc_thresh)
 		return true;
 
 	return false;
@@ -33,10 +28,21 @@ static bool split_at(uint8_t *buf)
 static void *split_thread(void *_me)
 {
 	struct worker_thread *me = _me;
-	int split_offsets_num;
+	struct split_job *sj = me->cookie;
+	size_t buf_size;
+	uint8_t *buf;
+	size_t split_offsets_num;
 	uint64_t *split_offsets;
 
-	split_offsets_num = 16;
+	buf_size = BLOCK_SIZE + sj->crc_block_size - 1;
+
+	buf = malloc(buf_size);
+	if (buf == NULL)
+		exit(EXIT_FAILURE);
+
+	split_offsets_num = DIV_ROUND_UP(0x100000000LL, sj->crc_thresh);
+	split_offsets_num = DIV_ROUND_UP(BLOCK_SIZE, split_offsets_num);
+	split_offsets_num *= 4;
 
 	split_offsets = malloc(split_offsets_num * sizeof(*split_offsets));
 	if (split_offsets == NULL)
@@ -45,37 +51,35 @@ static void *split_thread(void *_me)
 	while (1) {
 		off_t off;
 		size_t toread;
-		uint8_t buf[BLOCK_SIZE + CRC_BLOCK_SIZE - 1];
 		ssize_t ret;
-		int num;
-		int i;
+		size_t num;
+		size_t i;
 
 		xsem_wait(&me->sem0);
 
-		off = file_offset;
-		if (off == file_size) {
+		off = sj->file_offset;
+		if (off == sj->file_size) {
 			xsem_post(&me->next->sem0);
 			break;
 		}
 
-		file_offset += BLOCK_SIZE;
-		if (file_offset > file_size)
-			file_offset = file_size;
+		sj->file_offset += BLOCK_SIZE;
+		if (sj->file_offset > sj->file_size)
+			sj->file_offset = sj->file_size;
 
-		toread = file_size - off;
-		if (toread > sizeof(buf))
-			toread = sizeof(buf);
-
-		ret = xpread(fd, buf, toread, off);
+		toread = sj->file_size - off;
+		if (toread > buf_size)
+			toread = buf_size;
 
 		xsem_post(&me->next->sem0);
 
+		ret = xpread(sj->fd, buf, toread, off);
 		if (ret != toread)
 			exit(EXIT_FAILURE);
 
 		num = 0;
-		for (i = 0; i <= toread - CRC_BLOCK_SIZE; i++) {
-			if (!split_at(buf + i))
+		for (i = off ? 0 : 1; i <= toread - sj->crc_block_size; i++) {
+			if (!should_split_at(sj, buf + i))
 				continue;
 
 			if (num == split_offsets_num) {
@@ -93,7 +97,7 @@ static void *split_thread(void *_me)
 		xsem_wait(&me->sem1);
 
 		for (i = 0; i < num; i++)
-			split_handler(split_offsets[i]);
+			sj->handler_split(sj->cookie, split_offsets[i]);
 
 		xsem_post(&me->next->sem1);
 	}
@@ -101,43 +105,16 @@ static void *split_thread(void *_me)
 	return NULL;
 }
 
-static void do_split(int fd_, void (*handler)(off_t))
+void do_split(struct split_job *sj)
 {
 	struct stat statbuf;
 
-	if (fstat(fd_, &statbuf) < 0)
+	if (fstat(sj->fd, &statbuf) < 0)
 		exit(EXIT_FAILURE);
 
-	fd = fd_;
-	file_size = statbuf.st_size;
-	file_offset = 0;
-	split_handler = handler;
-	run_threads(split_thread, NULL);
-}
+	sj->file_size = statbuf.st_size;
+	sj->file_offset = 0;
+	run_threads(split_thread, sj);
 
-static void handler(off_t offset)
-{
-	printf("%jd\n", (intmax_t)offset);
-}
-
-int main(int argc, char *argv[])
-{
-	int fd;
-
-	if (argc != 2) {
-		fprintf(stderr, "syntax: %s <file>\n", argv[0]);
-		return 1;
-	}
-
-	fd = open(argv[1], O_RDONLY);
-	if (fd < 0) {
-		perror("open");
-		return 1;
-	}
-
-	do_split(fd, handler);
-
-	close(fd);
-
-	return 0;
+	sj->handler_split(sj->cookie, sj->file_size);
 }
