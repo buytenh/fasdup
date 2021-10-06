@@ -16,6 +16,7 @@
 
 static bool should_split_at(struct split_job *sj, uint8_t *buf)
 {
+#if 1
 	uint32_t crc;
 
 	crc = crc32c(0, buf, sj->crc_block_size);
@@ -23,6 +24,12 @@ static bool should_split_at(struct split_job *sj, uint8_t *buf)
 		return true;
 
 	return false;
+#else
+	if (buf[0] == '>')
+		return true;
+
+	return false;
+#endif
 }
 
 static void *split_thread(void *_me)
