@@ -50,29 +50,33 @@ static void split(void *cookie, off_t split_offset)
 
 int main(int argc, char *argv[])
 {
-	struct split_job sj;
+	int i;
 
-	if (argc != 2) {
-		fprintf(stderr, "syntax: %s <file>\n", argv[0]);
+	if (argc < 2) {
+		fprintf(stderr, "syntax: %s <file>+\n", argv[0]);
 		return 1;
 	}
 
-	srcfd = open(argv[1], O_RDONLY);
-	if (srcfd < 0) {
-		perror("open");
-		return 1;
+	for (i = 1; i < argc; i++) {
+		struct split_job sj;
+
+		srcfd = open(argv[i], O_RDONLY);
+		if (srcfd < 0) {
+			perror("open");
+			continue;
+		}
+
+		last_offset = 0;
+
+		sj.fd = srcfd;
+		sj.crc_block_size = 64;
+		sj.crc_thresh = 0x00001000;
+		sj.cookie = NULL;
+		sj.handler_split = split;
+		do_split(&sj);
+
+		close(srcfd);
 	}
-
-	last_offset = 0;
-
-	sj.fd = srcfd;
-	sj.crc_block_size = 64;
-	sj.crc_thresh = 0x00001000;
-	sj.cookie = NULL;
-	sj.handler_split = split;
-	do_split(&sj);
-
-	close(srcfd);
 
 	return 0;
 }
