@@ -183,6 +183,7 @@ static void count_frags(char *buf, size_t len)
 struct read_job {
 	int		fd;
 
+	pthread_mutex_t	lock;
 	const uint8_t	*prev;
 	int		prev_length;
 };
@@ -224,17 +225,17 @@ static void *read_thread(void *_me)
 		uint8_t *n;
 		size_t nextline;
 
-		xsem_wait(&me->sem0);
+		pthread_mutex_lock(&rj->lock);
 
 		len = 0;
 		if (rj->prev != NULL) {
-			memcpy(buf, rj->prev, rj->prev_length);
+			memmove(buf, rj->prev, rj->prev_length);
 			len = rj->prev_length;
 		}
 
 		ret = xread(rj->fd, buf + len, sizeof(buf) - len);
 		if (ret <= 0) {
-			xsem_post(&me->next->sem0);
+			pthread_mutex_unlock(&rj->lock);
 			break;
 		}
 
@@ -255,7 +256,7 @@ static void *read_thread(void *_me)
 			len = nextline;
 		}
 
-		xsem_post(&me->next->sem0);
+		pthread_mutex_unlock(&rj->lock);
 
 		count_frags((char *)buf, len);
 	}
@@ -268,14 +269,18 @@ static void read_frags(int fd)
 	struct read_job rj;
 
 	rj.fd = fd;
+	pthread_mutex_init(&rj.lock, NULL);
 	rj.prev = NULL;
 	rj.prev_length = 0;
 	run_threads(read_thread, &rj);
+
+	pthread_mutex_destroy(&rj.lock);
 }
 
 struct summarize_job {
 	int		tree;
 
+	pthread_mutex_t	lock;
 	uint64_t	frag_count;
 	uint64_t	unique_frag_count;
 	uint64_t	bytes;
@@ -289,7 +294,7 @@ static void *summarize_thread(void *_me)
 	struct worker_thread *me = _me;
 	struct summarize_job *sj = me->cookie;
 
-	xsem_wait(&me->sem0);
+	pthread_mutex_lock(&sj->lock);
 
 	while (1) {
 		int i;
@@ -302,14 +307,12 @@ static void *summarize_thread(void *_me)
 		struct iv_avl_node *an;
 
 		i = sj->tree;
-		if (i == TREES) {
-			xsem_post(&me->next->sem0);
+		if (i == TREES)
 			break;
-		}
 
 		sj->tree++;
 
-		xsem_post(&me->next->sem0);
+		pthread_mutex_unlock(&sj->lock);
 
 		frag_count = 0;
 		unique_frag_count = 0;
@@ -336,7 +339,7 @@ static void *summarize_thread(void *_me)
 			unique_pagebytes += pb;
 		}
 
-		xsem_wait(&me->sem0);
+		pthread_mutex_lock(&sj->lock);
 
 		sj->frag_count += frag_count;
 		sj->unique_frag_count += unique_frag_count;
@@ -346,6 +349,8 @@ static void *summarize_thread(void *_me)
 		sj->unique_pagebytes += unique_pagebytes;
 	}
 
+	pthread_mutex_unlock(&sj->lock);
+
 	return NULL;
 }
 
@@ -354,7 +359,10 @@ static void print_summary(void)
 	struct summarize_job sj;
 
 	memset(&sj, 0, sizeof(sj));
+	pthread_mutex_init(&sj.lock, NULL);
 	run_threads(summarize_thread, &sj);
+
+	pthread_mutex_destroy(&sj.lock);
 
 	printf("fragments (total)\t%15" PRId64 "\n", sj.frag_count);
 	printf("fragments (unique)\t%15" PRId64 "\n", sj.unique_frag_count);
