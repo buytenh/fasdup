@@ -1,11 +1,26 @@
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <iv_avl.h>
 #include <iv_list.h>
 #include <openssl/sha.h>
+#include <pthread.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include "common.h"
 
 #define ROUND_UP(x, y)	((((x) + (y) - 1) / (y)) * (y))
+
+#define TREES		65536
+
+static struct {
+	struct iv_avl_tree	frags;
+	pthread_mutex_t		lock;
+} frags[TREES];
 
 struct frag {
 	struct iv_avl_node	an;
@@ -13,8 +28,6 @@ struct frag {
 	uint64_t		length;
 	int			count;
 };
-
-static struct iv_avl_tree frags;
 
 static int
 compare_frags(const struct iv_avl_node *_a, const struct iv_avl_node *_b)
@@ -64,11 +77,11 @@ static int parse_hash(uint8_t *hash, char *text)
 	return 0;
 }
 
-static struct frag *find_frag(const uint8_t *sha512)
+static struct frag *find_frag(struct iv_avl_tree *frags, const uint8_t *sha512)
 {
 	struct iv_avl_node *an;
 
-	an = frags.root;
+	an = frags->root;
 	while (an != NULL) {
 		struct frag *f;
 		int ret;
@@ -88,17 +101,27 @@ static struct frag *find_frag(const uint8_t *sha512)
 	return NULL;
 }
 
+static int hash_to_tree(const uint8_t *sha512)
+{
+	return (sha512[0] << 8) | sha512[1];
+}
+
 static void count_frag(const uint8_t *sha512, uint64_t length)
 {
+	int tree;
 	struct frag *f;
 
-	f = find_frag(sha512);
+	tree = hash_to_tree(sha512);
+	pthread_mutex_lock(&frags[tree].lock);
+
+	f = find_frag(&frags[tree].frags, sha512);
 	if (f != NULL) {
 		if (length != f->length) {
 			fprintf(stderr, "fragment length mismatch!\n");
 			exit(EXIT_FAILURE);
 		}
 		f->count++;
+		pthread_mutex_unlock(&frags[tree].lock);
 		return;
 	}
 
@@ -111,27 +134,37 @@ static void count_frag(const uint8_t *sha512, uint64_t length)
 	memcpy(f->sha512, sha512, sizeof(f->sha512));
 	f->length = length;
 	f->count = 1;
-	iv_avl_tree_insert(&frags, &f->an);
+	iv_avl_tree_insert(&frags[tree].frags, &f->an);
+
+	pthread_mutex_unlock(&frags[tree].lock);
 }
 
-static void read_frags(FILE *fp)
+static void count_frags(char *buf, size_t len)
 {
-	while (1) {
-		char line[256];
+	char *end;
+
+	end = buf + len;
+	while (buf < end) {
+		char *n;
 		char hash[256];
-		uint64_t length;
+		uint64_t frag_length;
 		uint8_t sha512[SHA512_DIGEST_LENGTH];
 
-		if (fgets(line, sizeof(line), fp) == NULL)
-			break;
+		n = memchr(buf, '\n', end - buf);
+		if (n == NULL) {
+			fprintf(stderr, "no newline found\n");
+			exit(EXIT_FAILURE);
+		}
 
-		if (sscanf(line, "%255s %" PRId64, hash, &length) != 2) {
-			fprintf(stderr, "can't parse line: %s", line);
+		*n = 0;
+
+		if (sscanf(buf, "%255s %" PRId64, hash, &frag_length) != 2) {
+			fprintf(stderr, "can't parse line: %s", buf);
 			exit(EXIT_FAILURE);
 		}
 
 		if (strlen(hash) != 2 * SHA512_DIGEST_LENGTH) {
-			fprintf(stderr, "can't parse hash [%s]\n", hash);
+			fprintf(stderr, "can't parse hash [%s]\n", buf);
 			exit(EXIT_FAILURE);
 		}
 
@@ -140,12 +173,88 @@ static void read_frags(FILE *fp)
 			exit(EXIT_FAILURE);
 		}
 
-		count_frag(sha512, length);
+		count_frag(sha512, frag_length);
+
+		buf = (char *)n + 1;
 	}
+}
+
+struct read_job {
+	int		fd;
+
+	const uint8_t	*prev;
+	int		prev_length;
+	off_t		file_offset;
+};
+
+static void *read_thread(void *_me)
+{
+	struct worker_thread *me = _me;
+	struct read_job *rj = me->cookie;
+	uint8_t buf[1048576];
+
+	while (1) {
+		size_t len;
+		ssize_t ret;
+		uint8_t *n;
+		size_t nextline;
+
+		xsem_wait(&me->sem0);
+
+		len = 0;
+		if (rj->prev != NULL) {
+			memcpy(buf, rj->prev, rj->prev_length);
+			len = rj->prev_length;
+		}
+
+		ret = xpread(rj->fd, buf + len, sizeof(buf) - len,
+			     rj->file_offset);
+		if (ret <= 0) {
+			xsem_post(&me->next->sem0);
+			break;
+		}
+
+		len += ret;
+
+		n = memrchr(buf, '\n', len);
+		if (n == NULL) {
+			fprintf(stderr, "no newline found\n");
+			exit(EXIT_FAILURE);
+		}
+
+		rj->prev = NULL;
+
+		nextline = n - buf + 1;
+		if (nextline < len) {
+			rj->prev = buf + nextline;
+			rj->prev_length = len - nextline;
+			len = nextline;
+		}
+
+		rj->file_offset += ret;
+
+		xsem_post(&me->next->sem0);
+
+		count_frags((char *)buf, len);
+	}
+
+	return NULL;
+}
+
+static void read_frags(int fd)
+{
+	struct read_job rj;
+
+	rj.fd = fd;
+	rj.file_offset = 0;
+	rj.prev = NULL;
+	rj.prev_length = 0;
+	run_threads(read_thread, &rj);
 }
 
 static void print_summary(void)
 {
+	int i;
 	uint64_t frag_count;
 	uint64_t unique_frag_count;
 	uint64_t bytes;
@@ -163,22 +272,24 @@ static void print_summary(void)
 	pagebytes = 0;
 	unique_pagebytes = 0;
 
-	iv_avl_tree_for_each (an, &frags) {
-		struct frag *f;
-		uint64_t pb;
+	for (i = 0; i < TREES; i++) {
+		iv_avl_tree_for_each (an, &frags[i].frags) {
+			struct frag *f;
+			uint64_t pb;
 
-		f = iv_container_of(an, struct frag, an);
+			f = iv_container_of(an, struct frag, an);
 
-		pb = ROUND_UP(f->length, 4096);
+			pb = ROUND_UP(f->length, 4096);
 
-		frag_count += f->count;
-		unique_frag_count++;
+			frag_count += f->count;
+			unique_frag_count++;
 
-		bytes += f->count * f->length;
-		unique_bytes += f->length;
+			bytes += f->count * f->length;
+			unique_bytes += f->length;
 
-		pagebytes += f->count * pb;
-		unique_pagebytes += pb;
+			pagebytes += f->count * pb;
+			unique_pagebytes += pb;
+		}
 	}
 
 	printf("fragments (total)\t%15" PRId64 "\n", frag_count);
@@ -191,26 +302,31 @@ static void print_summary(void)
 
 int main(int argc, char *argv[])
 {
-	INIT_IV_AVL_TREE(&frags, compare_frags);
+	int i;
+
+	for (i = 0; i < TREES; i++) {
+		INIT_IV_AVL_TREE(&frags[i].frags, compare_frags);
+		pthread_mutex_init(&frags[i].lock, NULL);
+	}
 
 	if (argc > 1) {
 		int i;
 
 		for (i = 1; i < argc; i++) {
-			FILE *fp;
+			int fd;
 
-			fp = fopen(argv[i], "r");
-			if (fp == NULL) {
-				perror("fopen");
+			fd = open(argv[i], O_RDONLY);
+			if (fd < 0) {
+				perror("open");
 				return 1;
 			}
 
-			read_frags(fp);
+			read_frags(fd);
 
-			fclose(fp);
+			close(fd);
 		}
 	} else {
-		read_frags(stdin);
+		read_frags(0);
 	}
 
 	print_summary();
