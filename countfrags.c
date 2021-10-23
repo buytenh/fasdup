@@ -189,11 +189,30 @@ static void print_summary(void)
 	printf("bytes in pages (unique)\t%15" PRId64 "\n", unique_pagebytes);
 }
 
-int main()
+int main(int argc, char *argv[])
 {
 	INIT_IV_AVL_TREE(&frags, compare_frags);
 
-	read_frags(stdin);
+	if (argc > 1) {
+		int i;
+
+		for (i = 1; i < argc; i++) {
+			FILE *fp;
+
+			fp = fopen(argv[i], "r");
+			if (fp == NULL) {
+				perror("fopen");
+				return 1;
+			}
+
+			read_frags(fp);
+
+			fclose(fp);
+		}
+	} else {
+		read_frags(stdin);
+	}
+
 	print_summary();
 
 	return 0;
