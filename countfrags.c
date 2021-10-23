@@ -252,27 +252,51 @@ static void read_frags(int fd)
 	run_threads(read_thread, &rj);
 }
 
-static void print_summary(void)
+struct summarize_job {
+	int		tree;
+
+	uint64_t	frag_count;
+	uint64_t	unique_frag_count;
+	uint64_t	bytes;
+	uint64_t	unique_bytes;
+	uint64_t	pagebytes;
+	uint64_t	unique_pagebytes;
+};
+
+static void *summarize_thread(void *_me)
 {
-	int i;
-	uint64_t frag_count;
-	uint64_t unique_frag_count;
-	uint64_t bytes;
-	uint64_t unique_bytes;
-	uint64_t pagebytes;
-	uint64_t unique_pagebytes;
-	struct iv_avl_node *an;
+	struct worker_thread *me = _me;
+	struct summarize_job *sj = me->cookie;
 
-	frag_count = 0;
-	unique_frag_count = 0;
+	xsem_wait(&me->sem0);
 
-	bytes = 0;
-	unique_bytes = 0;
+	while (1) {
+		int i;
+		uint64_t frag_count;
+		uint64_t unique_frag_count;
+		uint64_t bytes;
+		uint64_t unique_bytes;
+		uint64_t pagebytes;
+		uint64_t unique_pagebytes;
+		struct iv_avl_node *an;
 
-	pagebytes = 0;
-	unique_pagebytes = 0;
+		i = sj->tree;
+		if (i == TREES) {
+			xsem_post(&me->next->sem0);
+			break;
+		}
 
-	for (i = 0; i < TREES; i++) {
+		sj->tree++;
+
+		xsem_post(&me->next->sem0);
+
+		frag_count = 0;
+		unique_frag_count = 0;
+		bytes = 0;
+		unique_bytes = 0;
+		pagebytes = 0;
+		unique_pagebytes = 0;
+
 		iv_avl_tree_for_each (an, &frags[i].frags) {
 			struct frag *f;
 			uint64_t pb;
@@ -290,14 +314,33 @@ static void print_summary(void)
 			pagebytes += f->count * pb;
 			unique_pagebytes += pb;
 		}
+
+		xsem_wait(&me->sem0);
+
+		sj->frag_count += frag_count;
+		sj->unique_frag_count += unique_frag_count;
+		sj->bytes += bytes;
+		sj->unique_bytes += unique_bytes;
+		sj->pagebytes += pagebytes;
+		sj->unique_pagebytes += unique_pagebytes;
 	}
 
-	printf("fragments (total)\t%15" PRId64 "\n", frag_count);
-	printf("fragments (unique)\t%15" PRId64 "\n", unique_frag_count);
-	printf("bytes (total)\t\t%15" PRId64 "\n", bytes);
-	printf("bytes (unique)\t\t%15" PRId64 "\n", unique_bytes);
-	printf("bytes in pages (total)\t%15" PRId64 "\n", pagebytes);
-	printf("bytes in pages (unique)\t%15" PRId64 "\n", unique_pagebytes);
+	return NULL;
+}
+
+static void print_summary(void)
+{
+	struct summarize_job sj;
+
+	memset(&sj, 0, sizeof(sj));
+	run_threads(summarize_thread, &sj);
+
+	printf("fragments (total)\t%15" PRId64 "\n", sj.frag_count);
+	printf("fragments (unique)\t%15" PRId64 "\n", sj.unique_frag_count);
+	printf("bytes (total)\t\t%15" PRId64 "\n", sj.bytes);
+	printf("bytes (unique)\t\t%15" PRId64 "\n", sj.unique_bytes);
+	printf("bytes in pages (total)\t%15" PRId64 "\n", sj.pagebytes);
+	printf("bytes in pages (unique)\t%15" PRId64 "\n", sj.unique_pagebytes);
 }
 
 int main(int argc, char *argv[])
