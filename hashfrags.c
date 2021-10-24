@@ -89,6 +89,8 @@ static void split_cb(void *cookie, int num, uint64_t *split_offsets)
 	if (xwrite(1, ptr, size) != size)
 		exit(EXIT_FAILURE);
 	pthread_mutex_unlock(&lock);
+
+	free(ptr);
 }
 
 int main(int argc, char *argv[])
