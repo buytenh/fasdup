@@ -13,12 +13,22 @@
 
 static int srcfd;
 
+static char hexnibble(int n)
+{
+	if (n < 10)
+		return '0' + n;
+	else
+		return 'a' + (n - 10);
+}
+
 static void split(FILE *fp, uint64_t from, uint64_t to)
 {
 	uint64_t length;
 	uint8_t *buf;
 	unsigned char sha512[SHA512_DIGEST_LENGTH];
+	int len;
 	int i;
+	char pbuf[256];
 
 	length = to - from;
 	if (length > SSIZE_MAX) {
@@ -41,9 +51,14 @@ static void split(FILE *fp, uint64_t from, uint64_t to)
 
 	free(buf);
 
-	for (i = 0; i < sizeof(sha512); i++)
-		fprintf(fp, "%.2x", sha512[i]);
-	fprintf(fp, " %" PRId64 "\n", length);
+	len = 0;
+	for (i = 0; i < sizeof(sha512); i++) {
+		pbuf[len++] = hexnibble(sha512[i] >> 4);
+		pbuf[len++] = hexnibble(sha512[i] & 0xf);
+	}
+	len += sprintf(pbuf + len, " %" PRId64 "\n", length);
+
+	fwrite(pbuf, len, 1, fp);
 }
 
 static ssize_t xwrite(int fd, const void *buf, size_t count)
