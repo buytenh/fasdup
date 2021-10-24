@@ -3,12 +3,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <openssl/sha.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "common.h"
+#include "hash.h"
 #include "splitpoints.h"
 
 static char hexnibble(int n)
@@ -23,7 +23,7 @@ static void split(FILE *fp, int fd, uint64_t from, uint64_t to)
 {
 	uint64_t length;
 	uint8_t *buf;
-	unsigned char sha512[SHA512_DIGEST_LENGTH];
+	unsigned char hash[HASH_LENGTH];
 	int len;
 	int i;
 	char pbuf[256];
@@ -45,14 +45,14 @@ static void split(FILE *fp, int fd, uint64_t from, uint64_t to)
 		exit(EXIT_FAILURE);
 	}
 
-	SHA512(buf, length, sha512);
+	hashfn(buf, length, hash);
 
 	free(buf);
 
 	len = 0;
-	for (i = 0; i < sizeof(sha512); i++) {
-		pbuf[len++] = hexnibble(sha512[i] >> 4);
-		pbuf[len++] = hexnibble(sha512[i] & 0xf);
+	for (i = 0; i < sizeof(hash); i++) {
+		pbuf[len++] = hexnibble(hash[i] >> 4);
+		pbuf[len++] = hexnibble(hash[i] & 0xf);
 	}
 	len += sprintf(pbuf + len, " %" PRId64 "\n", length);
 

@@ -6,13 +6,13 @@
 #include <fcntl.h>
 #include <iv_avl.h>
 #include <iv_list.h>
-#include <openssl/sha.h>
 #include <pthread.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "common.h"
+#include "hash.h"
 
 #define ROUND_UP(x, y)	((((x) + (y) - 1) / (y)) * (y))
 
@@ -25,7 +25,7 @@ static struct {
 
 struct frag {
 	struct iv_avl_node	an;
-	uint8_t			sha512[SHA512_DIGEST_LENGTH];
+	uint8_t			hash[HASH_LENGTH];
 	uint64_t		length;
 	int			count;
 };
@@ -39,7 +39,7 @@ compare_frags(const struct iv_avl_node *_a, const struct iv_avl_node *_b)
 	a = iv_container_of(_a, struct frag, an);
 	b = iv_container_of(_b, struct frag, an);
 
-	return memcmp(a->sha512, b->sha512, sizeof(a->sha512));
+	return memcmp(a->hash, b->hash, sizeof(a->hash));
 }
 
 static int hextoval(char c)
@@ -60,7 +60,7 @@ static int parse_hash(uint8_t *hash, char *text)
 {
 	int i;
 
-	for (i = 0; i < SHA512_DIGEST_LENGTH; i++) {
+	for (i = 0; i < HASH_LENGTH; i++) {
 		int val;
 		int val2;
 
@@ -78,7 +78,7 @@ static int parse_hash(uint8_t *hash, char *text)
 	return 0;
 }
 
-static struct frag *find_frag(struct iv_avl_tree *frags, const uint8_t *sha512)
+static struct frag *find_frag(struct iv_avl_tree *frags, const uint8_t *hash)
 {
 	struct iv_avl_node *an;
 
@@ -89,7 +89,7 @@ static struct frag *find_frag(struct iv_avl_tree *frags, const uint8_t *sha512)
 
 		f = iv_container_of(an, struct frag, an);
 
-		ret = memcmp(sha512, f->sha512, sizeof(f->sha512));
+		ret = memcmp(hash, f->hash, sizeof(f->hash));
 		if (ret == 0)
 			return f;
 
@@ -102,20 +102,20 @@ static struct frag *find_frag(struct iv_avl_tree *frags, const uint8_t *sha512)
 	return NULL;
 }
 
-static int hash_to_tree(const uint8_t *sha512)
+static int hash_to_tree(const uint8_t *hash)
 {
-	return (sha512[0] << 16) | (sha512[1] << 8) | sha512[2];
+	return (hash[0] << 16) | (hash[1] << 8) | hash[2];
 }
 
-static void count_frag(const uint8_t *sha512, uint64_t length)
+static void count_frag(const uint8_t *hash, uint64_t length)
 {
 	int tree;
 	struct frag *f;
 
-	tree = hash_to_tree(sha512);
+	tree = hash_to_tree(hash);
 	pthread_mutex_lock(&frags[tree].lock);
 
-	f = find_frag(&frags[tree].frags, sha512);
+	f = find_frag(&frags[tree].frags, hash);
 	if (f != NULL) {
 		if (length != f->length) {
 			fprintf(stderr, "fragment length mismatch!\n");
@@ -132,7 +132,7 @@ static void count_frag(const uint8_t *sha512, uint64_t length)
 		exit(EXIT_FAILURE);
 	}
 
-	memcpy(f->sha512, sha512, sizeof(f->sha512));
+	memcpy(f->hash, hash, sizeof(f->hash));
 	f->length = length;
 	f->count = 1;
 	iv_avl_tree_insert(&frags[tree].frags, &f->an);
@@ -147,9 +147,9 @@ static void count_frags(char *buf, size_t len)
 	end = buf + len;
 	while (buf < end) {
 		char *n;
-		char hash[256];
+		char hashstr[256];
 		uint64_t frag_length;
-		uint8_t sha512[SHA512_DIGEST_LENGTH];
+		uint8_t hash[HASH_LENGTH];
 
 		n = memchr(buf, '\n', end - buf);
 		if (n == NULL) {
@@ -159,22 +159,22 @@ static void count_frags(char *buf, size_t len)
 
 		*n = 0;
 
-		if (sscanf(buf, "%255s %" PRId64, hash, &frag_length) != 2) {
+		if (sscanf(buf, "%255s %" PRId64, hashstr, &frag_length) != 2) {
 			fprintf(stderr, "can't parse line: %s", buf);
 			exit(EXIT_FAILURE);
 		}
 
-		if (strlen(hash) != 2 * SHA512_DIGEST_LENGTH) {
+		if (strlen(hashstr) != 2 * HASH_LENGTH) {
 			fprintf(stderr, "can't parse hash [%s]\n", buf);
 			exit(EXIT_FAILURE);
 		}
 
-		if (parse_hash(sha512, hash)) {
-			fprintf(stderr, "can't parse hash [%s]\n", hash);
+		if (parse_hash(hash, hashstr)) {
+			fprintf(stderr, "can't parse hash [%s]\n", hashstr);
 			exit(EXIT_FAILURE);
 		}
 
-		count_frag(sha512, frag_length);
+		count_frag(hash, frag_length);
 
 		buf = (char *)n + 1;
 	}
