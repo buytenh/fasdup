@@ -16,7 +16,7 @@
 
 #define ROUND_UP(x, y)	((((x) + (y) - 1) / (y)) * (y))
 
-#define TREES		65536
+#define TREES		16777216
 
 static struct {
 	struct iv_avl_tree	frags;
@@ -104,7 +104,7 @@ static struct frag *find_frag(struct iv_avl_tree *frags, const uint8_t *sha512)
 
 static int hash_to_tree(const uint8_t *sha512)
 {
-	return (sha512[0] << 8) | sha512[1];
+	return (sha512[0] << 16) | (sha512[1] << 8) | sha512[2];
 }
 
 static void count_frag(const uint8_t *sha512, uint64_t length)
