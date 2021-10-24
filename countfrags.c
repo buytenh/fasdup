@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <iv_avl.h>
 #include <iv_list.h>
@@ -184,8 +185,32 @@ struct read_job {
 
 	const uint8_t	*prev;
 	int		prev_length;
-	off_t		file_offset;
 };
+
+static ssize_t xread(int fd, void *buf, size_t count)
+{
+	off_t processed;
+
+	processed = 0;
+	while (processed < count) {
+		ssize_t ret;
+
+		do {
+			ret = read(fd, buf, count - processed);
+		} while (ret < 0 && errno == EINTR);
+
+		if (ret <= 0) {
+			if (ret < 0)
+				perror("read");
+			return processed ? processed : ret;
+		}
+
+		buf += ret;
+		processed += ret;
+	}
+
+	return processed;
+}
 
 static void *read_thread(void *_me)
 {
@@ -207,8 +232,7 @@ static void *read_thread(void *_me)
 			len = rj->prev_length;
 		}
 
-		ret = xpread(rj->fd, buf + len, sizeof(buf) - len,
-			     rj->file_offset);
+		ret = xread(rj->fd, buf + len, sizeof(buf) - len);
 		if (ret <= 0) {
 			xsem_post(&me->next->sem0);
 			break;
@@ -231,8 +255,6 @@ static void *read_thread(void *_me)
 			len = nextline;
 		}
 
-		rj->file_offset += ret;
-
 		xsem_post(&me->next->sem0);
 
 		count_frags((char *)buf, len);
@@ -246,7 +268,6 @@ static void read_frags(int fd)
 	struct read_job rj;
 
 	rj.fd = fd;
-	rj.file_offset = 0;
 	rj.prev = NULL;
 	rj.prev_length = 0;
 	run_threads(read_thread, &rj);
