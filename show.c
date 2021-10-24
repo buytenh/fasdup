@@ -1,15 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "splitpoints.h"
 
-static void split(void *cookie, off_t split_offset)
+static void split(void *cookie, int num, uint64_t *split_offsets)
 {
-	printf("%jd\n", (intmax_t)split_offset);
-	fflush(stdout);
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	int i;
+
+	pthread_mutex_lock(&lock);
+
+	for (i = 0; i < num; i++)
+		printf("%" PRId64 " ", split_offsets[i]);
+	printf("-- %" PRId64 "\n", split_offsets[num]);
+
+	pthread_mutex_unlock(&lock);
 }
 
 int main(int argc, char *argv[])

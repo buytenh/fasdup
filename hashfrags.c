@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <openssl/sha.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -10,18 +12,17 @@
 #include "splitpoints.h"
 
 static int srcfd;
-static off_t last_offset;
 
-static void split(void *cookie, off_t split_offset)
+static void split(FILE *fp, uint64_t from, uint64_t to)
 {
-	off_t length;
+	uint64_t length;
 	uint8_t *buf;
 	unsigned char sha512[SHA512_DIGEST_LENGTH];
 	int i;
 
-	length = split_offset - last_offset;
+	length = to - from;
 	if (length > SSIZE_MAX) {
-		fprintf(stderr, "fragment too big (%jd)\n", length);
+		fprintf(stderr, "fragment too big (%" PRId64 ")\n", length);
 		exit(EXIT_FAILURE);
 	}
 
@@ -31,7 +32,7 @@ static void split(void *cookie, off_t split_offset)
 		exit(EXIT_FAILURE);
 	}
 
-	if (xpread(srcfd, buf, length, last_offset) != length) {
+	if (xpread(srcfd, buf, length, from) != length) {
 		fprintf(stderr, "read error\n");
 		exit(EXIT_FAILURE);
 	}
@@ -41,11 +42,53 @@ static void split(void *cookie, off_t split_offset)
 	free(buf);
 
 	for (i = 0; i < sizeof(sha512); i++)
-		printf("%.2x", sha512[i]);
-	printf(" %jd\n", length);
-	fflush(stdout);
+		fprintf(fp, "%.2x", sha512[i]);
+	fprintf(fp, " %" PRId64 "\n", length);
+}
 
-	last_offset = split_offset;
+static ssize_t xwrite(int fd, const void *buf, size_t count)
+{
+	off_t processed;
+
+	processed = 0;
+	while (processed < count) {
+		ssize_t ret;
+
+		do {
+			ret = write(fd, buf, count - processed);
+		} while (ret < 0 && errno == EINTR);
+
+		if (ret < 0) {
+			perror("write");
+			return processed ? processed : ret;
+		}
+
+		buf += ret;
+		processed += ret;
+	}
+
+	return processed;
+}
+
+static void split_cb(void *cookie, int num, uint64_t *split_offsets)
+{
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	char *ptr;
+	size_t size;
+	FILE *fp;
+	int i;
+
+	fp = open_memstream(&ptr, &size);
+
+	for (i = 0; i < num; i++)
+		split(fp, split_offsets[i], split_offsets[i + 1]);
+
+	fclose(fp);
+
+	pthread_mutex_lock(&lock);
+	if (xwrite(1, ptr, size) != size)
+		exit(EXIT_FAILURE);
+	pthread_mutex_unlock(&lock);
 }
 
 int main(int argc, char *argv[])
@@ -66,13 +109,11 @@ int main(int argc, char *argv[])
 			continue;
 		}
 
-		last_offset = 0;
-
 		sj.fd = srcfd;
 		sj.crc_block_size = 64;
 		sj.crc_thresh = 0x00001000;
 		sj.cookie = NULL;
-		sj.handler_split = split;
+		sj.handler_split = split_cb;
 		do_split(&sj);
 
 		close(srcfd);

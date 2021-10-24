@@ -10,10 +10,12 @@ struct split_job {
 	size_t		crc_block_size;
 	uint32_t	crc_thresh;
 	void		*cookie;
-	void		(*handler_split)(void *cookie, off_t split_offset);
+	void		(*handler_split)(void *cookie, int num,
+					 uint64_t *split_offsets);
 
-	off_t		file_size;
-	off_t		file_offset;
+	uint64_t	file_size;
+	uint64_t	file_offset;
+	uint64_t	prev_splitpoint;
 };
 
 void do_split(struct split_job *sj);

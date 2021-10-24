@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -11,17 +12,17 @@
 
 static int dirfd;
 static int srcfd;
-static off_t last_offset;
 
-static void split(void *cookie, off_t split_offset)
+static void split(uint64_t from, uint64_t to)
 {
 	char file[64];
 	int fd;
+	off_t off;
 
-	printf("%jd..%jd\n", (intmax_t)last_offset, (intmax_t)split_offset - 1);
+	printf("%" PRId64 "\r", from);
 	fflush(stdout);
 
-	snprintf(file, sizeof(file), "%.16jx", (intmax_t)last_offset);
+	snprintf(file, sizeof(file), "%.16" PRIx64, from);
 
 	fd = openat(dirfd, file, O_CREAT | O_TRUNC | O_WRONLY, 0666);
 	if (fd < 0) {
@@ -29,12 +30,13 @@ static void split(void *cookie, off_t split_offset)
 		exit(EXIT_FAILURE);
 	}
 
-	while (last_offset < split_offset) {
+	off = from;
+	while (off < to) {
 		ssize_t ret;
 
 		do {
-			ret = copy_file_range(srcfd, &last_offset, fd, NULL,
-					      split_offset - last_offset, 0);
+			ret = copy_file_range(srcfd, &off, fd,
+					      NULL, to - off, 0);
 		} while (ret < 0 && errno == EINTR);
 
 		if (ret < 0) {
@@ -49,12 +51,14 @@ static void split(void *cookie, off_t split_offset)
 	}
 
 	close(fd);
+}
 
-	if (last_offset != split_offset) {
-		fprintf(stderr, "mismatch %jd vs %jd\n", last_offset,
-			split_offset);
-		exit(EXIT_FAILURE);
-	}
+static void split_cb(void *cookie, int num, uint64_t *split_offsets)
+{
+	int i;
+
+	for (i = 0; i < num; i++)
+		split(split_offsets[i], split_offsets[i + 1]);
 }
 
 int main(int argc, char *argv[])
@@ -78,14 +82,14 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	last_offset = 0;
-
 	sj.fd = srcfd;
 	sj.crc_block_size = 64;
 	sj.crc_thresh = 0x00001000;
 	sj.cookie = NULL;
-	sj.handler_split = split;
+	sj.handler_split = split_cb;
 	do_split(&sj);
+
+	printf("\n");
 
 	close(srcfd);
 

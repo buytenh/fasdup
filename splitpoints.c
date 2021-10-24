@@ -56,7 +56,7 @@ static void *split_thread(void *_me)
 		exit(EXIT_FAILURE);
 
 	while (1) {
-		off_t off;
+		uint64_t off;
 		size_t toread;
 		ssize_t ret;
 		size_t num;
@@ -84,7 +84,7 @@ static void *split_thread(void *_me)
 		if (ret != toread)
 			exit(EXIT_FAILURE);
 
-		num = 0;
+		num = 1;
 		for (i = off ? 0 : 1; i <= toread - sj->crc_block_size; i++) {
 			if (!should_split_at(sj, buf + i))
 				continue;
@@ -103,11 +103,17 @@ static void *split_thread(void *_me)
 
 		xsem_wait(&me->sem1);
 
-		for (i = 0; i < num; i++)
-			sj->handler_split(sj->cookie, split_offsets[i]);
+		split_offsets[0] = sj->prev_splitpoint;
+		sj->prev_splitpoint = split_offsets[num - 1];
 
 		xsem_post(&me->next->sem1);
+
+		if (num > 1)
+			sj->handler_split(sj->cookie, num - 1, split_offsets);
 	}
+
+	free(split_offsets);
+	free(buf);
 
 	return NULL;
 }
@@ -115,13 +121,17 @@ static void *split_thread(void *_me)
 void do_split(struct split_job *sj)
 {
 	struct stat statbuf;
+	uint64_t off[2];
 
 	if (fstat(sj->fd, &statbuf) < 0)
 		exit(EXIT_FAILURE);
 
 	sj->file_size = statbuf.st_size;
 	sj->file_offset = 0;
+	sj->prev_splitpoint = 0;
 	run_threads(split_thread, sj);
 
-	sj->handler_split(sj->cookie, sj->file_size);
+	off[0] = sj->prev_splitpoint;
+	off[1] = sj->file_size;
+	sj->handler_split(sj->cookie, 1, off);
 }
