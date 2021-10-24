@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include "splitpoints.h"
 
-static void split(void *cookie, int num, uint64_t *split_offsets)
+static void split(void *cookie, int fd, int num, uint64_t *split_offsets)
 {
 	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 	int i;
@@ -39,6 +39,7 @@ int main(int argc, char *argv[])
 	}
 
 	sj.fd = srcfd;
+	sj.file = argv[1];
 	sj.crc_block_size = 64;
 	sj.crc_thresh = 0x00001000;
 	sj.cookie = NULL;

@@ -36,10 +36,17 @@ static void *split_thread(void *_me)
 {
 	struct worker_thread *me = _me;
 	struct split_job *sj = me->cookie;
+	int fd;
 	size_t buf_size;
 	uint8_t *buf;
 	size_t split_offsets_num;
 	uint64_t *split_offsets;
+
+	fd = open(sj->file, O_RDONLY);
+	if (fd < 0) {
+		perror("open");
+		exit(EXIT_FAILURE);
+	}
 
 	buf_size = BLOCK_SIZE + sj->crc_block_size - 1;
 
@@ -80,7 +87,7 @@ static void *split_thread(void *_me)
 
 		xsem_post(&me->next->sem0);
 
-		ret = xpread(sj->fd, buf, toread, off);
+		ret = xpread(fd, buf, toread, off);
 		if (ret != toread)
 			exit(EXIT_FAILURE);
 
@@ -108,12 +115,16 @@ static void *split_thread(void *_me)
 
 		xsem_post(&me->next->sem1);
 
-		if (num > 1)
-			sj->handler_split(sj->cookie, num - 1, split_offsets);
+		if (num > 1) {
+			sj->handler_split(sj->cookie, fd,
+					  num - 1, split_offsets);
+		}
 	}
 
 	free(split_offsets);
 	free(buf);
+
+	close(fd);
 
 	return NULL;
 }
@@ -133,5 +144,5 @@ void do_split(struct split_job *sj)
 
 	off[0] = sj->prev_splitpoint;
 	off[1] = sj->file_size;
-	sj->handler_split(sj->cookie, 1, off);
+	sj->handler_split(sj->cookie, sj->fd, 1, off);
 }

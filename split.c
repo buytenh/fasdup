@@ -11,9 +11,8 @@
 #include "splitpoints.h"
 
 static int dirfd;
-static int srcfd;
 
-static void split(uint64_t from, uint64_t to)
+static void split(int srcfd, uint64_t from, uint64_t to)
 {
 	char file[64];
 	int fd;
@@ -53,16 +52,17 @@ static void split(uint64_t from, uint64_t to)
 	close(fd);
 }
 
-static void split_cb(void *cookie, int num, uint64_t *split_offsets)
+static void split_cb(void *cookie, int fd, int num, uint64_t *split_offsets)
 {
 	int i;
 
 	for (i = 0; i < num; i++)
-		split(split_offsets[i], split_offsets[i + 1]);
+		split(fd, split_offsets[i], split_offsets[i + 1]);
 }
 
 int main(int argc, char *argv[])
 {
+	int srcfd;
 	struct split_job sj;
 
 	if (argc != 3) {
@@ -83,6 +83,7 @@ int main(int argc, char *argv[])
 	}
 
 	sj.fd = srcfd;
+	sj.file = argv[2];
 	sj.crc_block_size = 64;
 	sj.crc_thresh = 0x00001000;
 	sj.cookie = NULL;

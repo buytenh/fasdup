@@ -7,10 +7,11 @@
 
 struct split_job {
 	int		fd;
+	const char	*file;
 	size_t		crc_block_size;
 	uint32_t	crc_thresh;
 	void		*cookie;
-	void		(*handler_split)(void *cookie, int num,
+	void		(*handler_split)(void *cookie, int fd, int num,
 					 uint64_t *split_offsets);
 
 	uint64_t	file_size;
