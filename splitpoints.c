@@ -15,18 +15,18 @@
 
 #define BLOCK_SIZE		16777216
 
-static bool should_split_at(struct split_job *sj, uint8_t *buf)
+static bool should_split_at(struct split_job *sj, uint8_t *buf, int off)
 {
 #if 1
 	uint32_t crc;
 
-	crc = crc32c(0, buf, sj->crc_block_size);
+	crc = crc32c(0, buf + off, sj->crc_block_size);
 	if (crc <= sj->crc_thresh)
 		return true;
 
 	return false;
 #else
-	if (buf[0] == '>')
+	if (off && buf[off - 1] == '\n' && buf[off] == '>')
 		return true;
 
 	return false;
@@ -98,7 +98,7 @@ static void *split_thread(void *_me)
 
 		num = 1;
 		for (i = off ? 0 : 1; i <= toread - sj->crc_block_size; i++) {
-			if (!should_split_at(sj, buf + i))
+			if (!should_split_at(sj, buf, i))
 				continue;
 
 			if (num == split_offsets_num) {
