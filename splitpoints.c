@@ -1,10 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <stdint.h>
 #include <unistd.h>
 #include "common.h"
 #include "crc32c.h"
@@ -85,6 +86,10 @@ static void *split_thread(void *_me)
 		if (toread > buf_size)
 			toread = buf_size;
 
+		fprintf(stderr, "%" PRId64 " / %" PRId64 " (%d%%)\r",
+			off, sj->file_size,
+			(int)DIV_ROUND_UP(100 * off, sj->file_size));
+
 		xsem_post(&me->next->sem0);
 
 		ret = xpread(fd, buf, toread, off);
@@ -145,4 +150,6 @@ void do_split(struct split_job *sj)
 	off[0] = sj->prev_splitpoint;
 	off[1] = sj->file_size;
 	sj->handler_split(sj->cookie, sj->fd, 1, off);
+
+	fprintf(stderr, "\n");
 }
